@@ -13,7 +13,7 @@ find_package(hdhomerun REQUIRED)
 
 include_directories(${kodiplatform_INCLUDE_DIRS})
 
-set(DEPLIBS ${kodiplatform_LIBRARIES)
+set(DEPLIBS ${kodiplatform_LIBRARIES})
 
 
 if(WIN32)
