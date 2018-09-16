@@ -1,5 +1,6 @@
 ## Eclipse project file
 /.project
+/.cproject
 ## Build location
 /build*
 
