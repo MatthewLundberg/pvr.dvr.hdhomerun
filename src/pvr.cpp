@@ -41,7 +41,7 @@
 
 #include <xbmc_addon_dll.h>
 #include <xbmc_pvr_dll.h>
-#include <version.h>
+#include "version.h"
 
 #include <libXBMC_addon.h>
 #include <libKODI_guilib.h>
