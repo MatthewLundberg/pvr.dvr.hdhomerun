@@ -1,3 +1,10 @@
+v1.2.9 (2018.07.xx)
+  - Update SQLite database engine to version 3.24.0
+  - Update cURL library to version 7.60.0 (Windows)
+  - Correct format of SessionID passed to HDHomeRun RECORD engine for Live TV streams
+  - (Windows) Build HTTP-only cURL from source instead of using prebuilt static library
+  - (Linux/Android/OSX) Switch to HTTP-only prebuilt libcurl static library
+
 v1.2.8 (2017.12.29)
   - Update zlib library to version 1.2.11
   - Update cURL library to version 7.57.0
