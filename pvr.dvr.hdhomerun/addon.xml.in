@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addon
-  id="pvr.hdhomerundvr"
+  id="pvr.dvr.hdhomerun"
   version="0.0.1"
   name="HDHomeRun DVR PVR Client"
   provider-name="Michael Brehm and Matt Lundberg">
