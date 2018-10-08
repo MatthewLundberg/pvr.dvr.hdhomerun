@@ -27,8 +27,8 @@ set(DEPLIBS ${kodiplatform_LIBRARIES}
             ${CURL_LIBRARIES})
 
 
-file(GLOB PVRHDHOMERUNDVR_SOURCES src/*.cpp)
-file(GLOB PVRHDHOMERUNDVR_HEADERS src/*.h)
+file(GLOB PVRDVRHDHOMERUN_SOURCES src/*.cpp)
+file(GLOB PVRDVRHDHOMERUN_HEADERS src/*.h)
 
 
 if(WIN32)
@@ -44,7 +44,7 @@ else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ggdb")
 endif()
 
-build_addon(pvr.zuki.hdhomerundvr PVRHDHOMERUNDVR DEPLIBS)
+build_addon(pvr.dvr.hdhomerun PVRDVRHDHOMERUN DEPLIBS)
 
 include(CPack)
 
