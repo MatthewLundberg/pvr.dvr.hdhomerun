@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-# Copyright (c) 2017 Michael G. Brehm
+# Copyright (c) 2018 Michael G. Brehm
 # 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -26,14 +26,14 @@ LOCAL_PATH := $(call my-dir)
 #
 include $(CLEAR_VARS)
 LOCAL_MODULE := libcurl-prebuilt
-LOCAL_SRC_FILES := depends/libcurl/android-$(TARGET_ARCH_ABI)/lib/libcurl.a
+LOCAL_SRC_FILES := depends/libcurl/$(TARGET_ABI)/lib/libcurl.a
 include $(PREBUILT_STATIC_LIBRARY)
 
 # libuuid
 #
 include $(CLEAR_VARS)
 LOCAL_MODULE := libuuid-prebuilt
-LOCAL_SRC_FILES := depends/libuuid/android-$(TARGET_ARCH_ABI)/lib/libuuid.a
+LOCAL_SRC_FILES := depends/libuuid/$(TARGET_ABI)/lib/libuuid.a
 include $(PREBUILT_STATIC_LIBRARY)
 
 # libhdhomerundvr
@@ -45,8 +45,9 @@ LOCAL_C_INCLUDES += \
 	depends/xbmc/xbmc \
 	depends/xbmc/xbmc/linux \
 	depends/xbmc/xbmc/addons/kodi-addon-dev-kit/include/kodi \
-	depends/libcurl/android-$(TARGET_ARCH_ABI)/include \
-	depends/libuuid/android-$(TARGET_ARCH_ABI)/include \
+	depends/http-status-codes-cpp \
+	depends/libcurl/$(TARGET_ABI)/include \
+	depends/libuuid/$(TARGET_ABI)/include \
 	depends/libhdhomerun \
 	depends/sqlite \
 	tmp/version
@@ -85,6 +86,7 @@ LOCAL_SRC_FILES := \
 	depends/libhdhomerun/hdhomerun_sock_posix.c \
 	depends/libhdhomerun/hdhomerun_video.c \
 	depends/sqlite/sqlite3.c \
+	src/curlshare.cpp \
 	src/database.cpp \
 	src/dbextension.cpp \
 	src/dvrstream.cpp \

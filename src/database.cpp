@@ -1,5 +1,5 @@
 //---------------------------------------------------------------------------
-// Copyright (c) 2017 Michael G. Brehm
+// Copyright (c) 2018 Michael G. Brehm
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -29,12 +29,19 @@
 #include <stdint.h>
 #include <string.h>
 #include <uuid/uuid.h>
+#include <xbmc_pvr_types.h>
 
+#include "curlshare.h"
 #include "hdhr.h"
 #include "sqlite_exception.h"
 #include "string_exception.h"
 
 #pragma warning(push, 4)
+
+// pvr.cpp (via version.h)
+//
+extern char const VERSION_PRODUCTNAME_ANSI[];
+extern char const VERSION_VERSION3_ANSI[];
 
 // Check SQLITE_THREADSAFE
 //
@@ -60,8 +67,8 @@
 
 void clean_filename(sqlite3_context* context, int argc, sqlite3_value** argv);
 void decode_channel_id(sqlite3_context* context, int argc, sqlite3_value** argv);
-void discover_devices_broadcast(sqlite3* instance);
-void discover_devices_http(sqlite3* instance);
+bool discover_devices_broadcast(sqlite3* instance);
+bool discover_devices_http(sqlite3* instance);
 void encode_channel_id(sqlite3_context* context, int argc, sqlite3_value** argv);
 void fnv_hash(sqlite3_context* context, int argc, sqlite3_value** argv);
 void generate_uuid(sqlite3_context* context, int argc, sqlite3_value** argv);
@@ -165,6 +172,16 @@ private:
 	size_t					m_position = 0;				// Current position
 };
 
+//---------------------------------------------------------------------------
+// GLOBAL VARIABLES
+//---------------------------------------------------------------------------
+
+// g_curlshare
+//
+// Global curlshare instance used with all easy interface handles generated
+// by the database layer via the http_request function
+static curlshare g_curlshare;
+
 //
 // CONNECTIONPOOL IMPLEMENTATION
 //
@@ -262,91 +279,113 @@ void add_recordingrule(sqlite3* instance, struct recordingrule const& recordingr
 	
 	if(instance == nullptr) return;
 
-	// Start a database transaction
-	execute_non_query(instance, "begin immediate transaction");
+	// Clone the episode table schema into a temporary table to avoid the WHERE clause problem below
+	execute_non_query(instance, "drop table if exists add_recordingrule_temp");
+	execute_non_query(instance, "create temp table add_recordingrule_temp as select * from episode limit 0");
 
 	try {
 
-		// Add the new recording rule and replace/insert all updated rules for the series
-		auto sql = "replace into recordingrule "
-			"select json_extract(value, '$.RecordingRuleID') as recordingruleid, "
-			"json_extract(value, '$.SeriesID') as seriesid, "
-			"value as data "
-			"from "
-			"json_each((with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
-			"select nullif(http_request('http://api.hdhomerun.com/api/recording_rules?DeviceAuth=' || coalesce(deviceauth.code, '') || '&Cmd=add&SeriesID=' || ?1 || "
-			"case when ?2 is null then '' else '&RecentOnly=' || ?2 end || "
-			"case when ?3 is null then '' else '&ChannelOnly=' || decode_channel_id(?3) end || "
-			"case when ?4 is null then '' else '&AfterOriginalAirdateOnly=' || strftime('%s', date(?4, 'unixepoch')) end || "
-			"case when ?5 is null then '' else '&DateTimeOnly=' || ?5 end || "
-			"case when ?6 is null then '' else '&StartPadding=' || ?6 end || "
-			"case when ?7 is null then '' else '&EndPadding=' || ?7 end), 'null') as data "
-			"from deviceauth))";
-
-		// Prepare the query
-		result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
-		if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
+		// Start a database transaction
+		execute_non_query(instance, "begin immediate transaction");
 
 		try {
 
-			// Bind the non-null query parameter(s)
-			result = sqlite3_bind_text(statement, 1, recordingrule.seriesid, -1, SQLITE_STATIC);
-			if((result == SQLITE_OK) && (recordingrule.recentonly)) result = sqlite3_bind_int(statement, 2, 1);
-			if((result == SQLITE_OK) && (recordingrule.channelid.value != 0)) result = sqlite3_bind_int(statement, 3, recordingrule.channelid.value);
-			if((result == SQLITE_OK) && (recordingrule.afteroriginalairdateonly != 0)) result = sqlite3_bind_int(statement, 4, static_cast<int>(recordingrule.afteroriginalairdateonly));
-			if((result == SQLITE_OK) && (recordingrule.datetimeonly != 0)) result = sqlite3_bind_int(statement, 5, static_cast<int>(recordingrule.datetimeonly));
-			if((result == SQLITE_OK) && (recordingrule.startpadding != 30)) result = sqlite3_bind_int(statement, 6, recordingrule.startpadding);
-			if((result == SQLITE_OK) && (recordingrule.endpadding != 30))  result = sqlite3_bind_int(statement, 7, recordingrule.endpadding);
-			if(result != SQLITE_OK) throw sqlite_exception(result);
+			// Add the new recording rule and replace/insert all updated rules for the series
+			auto sql = "replace into recordingrule "
+				"select json_extract(value, '$.RecordingRuleID') as recordingruleid, "
+				"json_extract(value, '$.SeriesID') as seriesid, "
+				"value as data "
+				"from "
+				"json_each((with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
+				"select nullif(http_request('http://api.hdhomerun.com/api/recording_rules?DeviceAuth=' || coalesce(deviceauth.code, '') || '&Cmd=add&SeriesID=' || ?1 || "
+				"case when ?2 is null then '' else '&RecentOnly=' || ?2 end || "
+				"case when ?3 is null then '' else '&ChannelOnly=' || decode_channel_id(?3) end || "
+				"case when ?4 is null then '' else '&AfterOriginalAirdateOnly=' || strftime('%s', date(?4, 'unixepoch')) end || "
+				"case when ?5 is null then '' else '&DateTimeOnly=' || ?5 end || "
+				"case when ?6 is null then '' else '&StartPadding=' || ?6 end || "
+				"case when ?7 is null then '' else '&EndPadding=' || ?7 end), 'null') as data "
+				"from deviceauth))";
 
-			// Execute the query - no result set is expected
-			result = sqlite3_step(statement);
-			if(result == SQLITE_ROW) throw string_exception(__func__, ": unexpected result set returned from non-query");
-			if(result != SQLITE_DONE) throw sqlite_exception(result, sqlite3_errmsg(instance));
+			// Prepare the query
+			result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
+			if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
 
-			sqlite3_finalize(statement);			// Finalize the SQLite statement
+			try {
+
+				// Bind the non-null query parameter(s)
+				result = sqlite3_bind_text(statement, 1, recordingrule.seriesid, -1, SQLITE_STATIC);
+				if((result == SQLITE_OK) && (recordingrule.recentonly)) result = sqlite3_bind_int(statement, 2, 1);
+				if((result == SQLITE_OK) && (recordingrule.channelid.value != 0)) result = sqlite3_bind_int(statement, 3, recordingrule.channelid.value);
+				if((result == SQLITE_OK) && (recordingrule.afteroriginalairdateonly != 0)) result = sqlite3_bind_int(statement, 4, static_cast<int>(recordingrule.afteroriginalairdateonly));
+				if((result == SQLITE_OK) && (recordingrule.datetimeonly != 0)) result = sqlite3_bind_int(statement, 5, static_cast<int>(recordingrule.datetimeonly));
+				if((result == SQLITE_OK) && (recordingrule.startpadding != 30)) result = sqlite3_bind_int(statement, 6, recordingrule.startpadding);
+				if((result == SQLITE_OK) && (recordingrule.endpadding != 30))  result = sqlite3_bind_int(statement, 7, recordingrule.endpadding);
+				if(result != SQLITE_OK) throw sqlite_exception(result);
+
+				// Execute the query - no result set is expected
+				result = sqlite3_step(statement);
+				if(result == SQLITE_ROW) throw string_exception(__func__, ": unexpected result set returned from non-query");
+				if(result != SQLITE_DONE) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+				sqlite3_finalize(statement);			// Finalize the SQLite statement
+			}
+
+			catch(...) { sqlite3_finalize(statement); throw; }
+
+			//
+			// NOTE: This had to be broken up into a multi-step query involving a temp table to avoid a SQLite bug/feature
+			// wherein using a function (http_request in this case) as part of a column definition is reevaluated when
+			// that column is subsequently used as part of a WHERE clause:
+			//
+			// [http://mailinglists.sqlite.org/cgi-bin/mailman/private/sqlite-users/2015-August/061083.html]
+			//
+			
+			// Update the episode data to take the new recording rule(s) into account; watch out for the web
+			// services returning 'null' on the episode query -- this happens when there are no episodes
+			sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
+				"insert into add_recordingrule_temp select ?1 as seriesid, "
+				"http_request('http://api.hdhomerun.com/api/episodes?DeviceAuth=' || coalesce(deviceauth.code, '') || '&SeriesID=' || ?1) as data "
+				"from deviceauth";
+
+			// Prepare the query
+			result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
+			if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+			try {
+
+				// Bind the non-null query parameter(s)
+				result = sqlite3_bind_text(statement, 1, recordingrule.seriesid, -1, SQLITE_STATIC);
+				if(result != SQLITE_OK) throw sqlite_exception(result);
+
+				// Execute the query - no result set is expected
+				result = sqlite3_step(statement);
+				if(result == SQLITE_ROW) throw string_exception(__func__, ": unexpected result set returned from non-query");
+				if(result != SQLITE_DONE) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+				sqlite3_finalize(statement);			// Finalize the SQLite statement
+			}
+
+			catch(...) { sqlite3_finalize(statement); throw; }
+
+			// Complete the replace operation into the episode table from the temporary table that was generated above
+			execute_non_query(instance, "replace into episode select seriesid, data from add_recordingrule_temp where cast(data as text) <> 'null'");
+
+			// Commit the transaction
+			execute_non_query(instance, "commit transaction");
 		}
 
-		catch(...) { sqlite3_finalize(statement); throw; }
+		// Rollback the entire transaction on any failure above
+		catch(...) { try_execute_non_query(instance, "rollback transaction"); throw; }
 
-		// Update the episode data to take the new recording rule(s) into account; watch out for the web
-		// services returning 'null' on the episode query -- this happens when there are no episodes
-		sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
-			"replace into episode "
-			"select ?1 as seriesid, "
-			"http_request('http://api.hdhomerun.com/api/episodes?DeviceAuth=' || coalesce(deviceauth.code, '') || '&SeriesID=' || ?1) as data "
-			"from deviceauth "
-			"where cast(data as text) <> 'null'";
+		// Poke the recording engine(s) after a successful rule change; don't worry about exceptions
+		try_execute_non_query(instance, "select http_request(json_extract(data, '$.BaseURL') || '/recording_events.post?sync') from device where type = 'storage'");
 
-		// Prepare the query
-		result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
-		if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
-
-		try {
-
-			// Bind the non-null query parameter(s)
-			result = sqlite3_bind_text(statement, 1, recordingrule.seriesid, -1, SQLITE_STATIC);
-			if(result != SQLITE_OK) throw sqlite_exception(result);
-
-			// Execute the query - no result set is expected
-			result = sqlite3_step(statement);
-			if(result == SQLITE_ROW) throw string_exception(__func__, ": unexpected result set returned from non-query");
-			if(result != SQLITE_DONE) throw sqlite_exception(result, sqlite3_errmsg(instance));
-
-			sqlite3_finalize(statement);			// Finalize the SQLite statement
-		}
-
-		catch(...) { sqlite3_finalize(statement); throw; }
-
-		// Commit the transaction
-		execute_non_query(instance, "commit transaction");
+		// Drop the temporary table
+		execute_non_query(instance, "drop table add_recordingrule_temp");
 	}
 
-	// Rollback the entire transaction on any failure above
-	catch(...) { try_execute_non_query(instance, "rollback transaction"); throw; }
-
-	// Poke the recording engine(s) after a successful rule change; don't worry about exceptions
-	try_execute_non_query(instance, "select http_request(json_extract(data, '$.BaseURL') || '/recording_events.post?sync') from device where type = 'storage'");
+	// Drop the temporary table on any exception
+	catch(...) { execute_non_query(instance, "drop table add_recordingrule_temp"); throw; }
 }
 
 //---------------------------------------------------------------------------
@@ -521,7 +560,7 @@ void delete_recordingrule(sqlite3* instance, unsigned int recordingruleid)
 	try {
 
 		// Delete the recording rule from the backend services and the local database
-		auto sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+		auto sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 			"delete from recordingrule where recordingruleid in "
 			"(select case when cast(http_request('http://api.hdhomerun.com/api/recording_rules?DeviceAuth=' || coalesce(deviceauth.code, '') || "
 			"'&Cmd=delete&RecordingRuleID=' || ?1) as text) = 'null' then ?1 else null end from deviceauth)";
@@ -588,6 +627,8 @@ void discover_devices(sqlite3* instance, bool usebroadcast)
 
 void discover_devices(sqlite3* instance, bool usebroadcast, bool& changed)
 {
+	bool			hastuners = false;			// Flag indicating if any tuners were detected
+
 	changed = false;							// Initialize [out] argument
 
 	if(instance == nullptr) throw std::invalid_argument("instance");
@@ -600,8 +641,12 @@ void discover_devices(sqlite3* instance, bool usebroadcast, bool& changed)
 
 		// The logic required to load the temp table from broadcast differs greatly from the method
 		// used to load from the HTTP API; the specific mechanisms have been broken out into helpers
-		if(usebroadcast) discover_devices_broadcast(instance);
-		else discover_devices_http(instance);
+		hastuners = (usebroadcast) ? discover_devices_broadcast(instance) : discover_devices_http(instance);
+
+		// If no tuner devices were found during discovery, throw an exception to abort the device discovery.
+		// The intention here is to prevent transient discovery problems from clearing out the existing devices
+		// and channel lineups from Kodi -- this causes problems with the EPG when they come back again
+		if(!hastuners) throw string_exception(__func__, ": no tuner devices were discovered; aborting device discovery");
 
 		// This requires a multi-step operation against the device table; start a transaction
 		execute_non_query(instance, "begin immediate transaction");
@@ -643,10 +688,13 @@ void discover_devices(sqlite3* instance, bool usebroadcast, bool& changed)
 //
 //	instance		- SQLite database instance
 
-void discover_devices_broadcast(sqlite3* instance)
+bool discover_devices_broadcast(sqlite3* instance)
 {
-	sqlite3_stmt*				statement;			// SQL statement to execute
-	int							result;				// Result from SQLite function
+	bool					hastuners = false;		// Flag indicating tuners were found
+	sqlite3_stmt*			statement;				// SQL statement to execute
+	int						result;					// Result from SQLite function
+
+	assert(instance != nullptr);
 
 	// deviceid | type | data
 	auto sql = "insert into discover_device values(printf('%08X', ?1), ?2, ?3)";
@@ -658,6 +706,9 @@ void discover_devices_broadcast(sqlite3* instance)
 		// Enumerate the devices on the local network accessible via UDP broadcast and insert them
 		// into the temp table using the baseurl as 'data' rather than the discovery JSON
 		enumerate_devices([&](struct discover_device const& device) -> void { 
+
+			// The presence or lack of tuner devices is used as the function return value
+			if(device.devicetype == device_type::tuner) hastuners = true;
 			
 			// Bind the query parameter(s)
 			result = sqlite3_bind_int(statement, 1, device.deviceid);
@@ -686,6 +737,9 @@ void discover_devices_broadcast(sqlite3* instance)
 
 	// Update the deviceid column for storage devices, the broadcast mechanism has no means to return the StorageID
 	execute_non_query(instance, "update discover_device set deviceid = coalesce(json_extract(data, '$.StorageID'), '00000000') where type = 'storage'");
+
+	// Indicate if any tuner devices were detected during discovery or not
+	return hastuners;
 }
 
 //---------------------------------------------------------------------------
@@ -697,15 +751,50 @@ void discover_devices_broadcast(sqlite3* instance)
 //
 //	instance		- SQLite database instance
 
-void discover_devices_http(sqlite3* instance)
+bool discover_devices_http(sqlite3* instance)
 {
-	// Otherwise, discover the devices from the HTTP API and insert them into a temporary table
-	execute_non_query(instance, "insert into discover_device select "
+	sqlite3_stmt*				statement;				// Database query statement
+	int							tuners = 0;				// Number of tuners found
+	int							result;					// Result from SQLite function call
+
+	assert(instance != nullptr);
+														//
+	// NOTE: This had to be broken up into a multi-step query involving a temp table to avoid a SQLite bug/feature
+	// wherein using a function (http_request in this case) as part of a column definition is reevaluated when
+	// that column is subsequently used as part of a WHERE clause:
+	//
+	// [http://mailinglists.sqlite.org/cgi-bin/mailman/private/sqlite-users/2015-August/061083.html]
+	//
+
+	// Discover the devices from the HTTP API and insert them into the discover_device temp table
+	execute_non_query(instance, "drop table if exists discover_device_http");
+	execute_non_query(instance, "create temp table discover_device_http as select "
 		"coalesce(json_extract(discovery.value, '$.DeviceID'), json_extract(discovery.value, '$.StorageID')) as deviceid, "
 		"case when json_type(discovery.value, '$.DeviceID') is not null then 'tuner' when json_type(discovery.value, '$.StorageID') is not null then 'storage' else 'unknown' end as type, "
-		"http_request(json_extract(discovery.value, '$.DiscoverURL'), null) as data "
-		"from json_each(http_request('http://api.hdhomerun.com/discover')) as discovery "
-		"where data is not null and json_extract(data, '$.Legacy') is null");
+		"http_request(json_extract(discovery.value, '$.DiscoverURL'), null) as data from json_each(http_request('http://api.hdhomerun.com/discover')) as discovery");
+	execute_non_query(instance, "insert into discover_device select deviceid, type, data from discover_device_http where data is not null and json_extract(data, '$.Legacy') is null");
+	execute_non_query(instance, "drop table discover_device_http");
+
+	// Determine if any tuner devices were discovered from the HTTP discovery query
+	auto sql = "select count(deviceid) as numtuners from discover_device where type = 'tuner'";
+
+	result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
+	if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+	try { 
+		
+		// Execute the scalar query
+		result = sqlite3_step(statement);
+
+		// There should be a single SQLITE_ROW returned from the initial step
+		if(result == SQLITE_ROW) tuners = sqlite3_column_int(statement, 0);
+		else if(result != SQLITE_DONE) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+		sqlite3_finalize(statement);
+		return (tuners > 0);
+	}
+
+	catch(...) { sqlite3_finalize(statement); throw; }
 }
 
 //---------------------------------------------------------------------------
@@ -746,7 +835,7 @@ void discover_episodes(sqlite3* instance, bool& changed)
 	try {
 
 		// Discover the episode information for each series that has a recording rule
-		execute_non_query(instance, "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+		execute_non_query(instance, "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 			"insert into discover_episode select entry.seriesid as seriesid, "
 			"http_request('http://api.hdhomerun.com/api/episodes?DeviceAuth=' || coalesce(deviceauth.code, '') || '&SeriesID=' || entry.seriesid) as data "
 			"from deviceauth, (select distinct json_extract(data, '$.SeriesID') as seriesid from recordingrule where seriesid is not null) as entry");
@@ -820,7 +909,7 @@ void discover_guide(sqlite3* instance, bool& changed)
 	try {
 
 		// Discover the electronic program guide from the network and insert it into a temporary table
-		execute_non_query(instance, "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+		execute_non_query(instance, "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 			"insert into discover_guide select "
 			"encode_channel_id(json_extract(discovery.value, '$.GuideNumber')) as channelid, "
 			"json_extract(discovery.value, '$.GuideName') as channelname, "
@@ -893,9 +982,19 @@ void discover_lineups(sqlite3* instance, bool& changed)
 
 	try {
 
+		//
+		// NOTE: This had to be broken up into a multi-step query involving a temp table to avoid a SQLite bug/feature
+		// wherein using a function (http_request in this case) as part of a column definition is reevaluated when
+		// that column is subsequently used as part of a WHERE clause:
+		//
+		// [http://mailinglists.sqlite.org/cgi-bin/mailman/private/sqlite-users/2015-August/061083.html]
+		//
+
 		// Discover the channel lineups for all available tuner devices; watch for results that return 'null'
-		execute_non_query(instance, "insert into discover_lineup select deviceid, http_request(json_extract(device.data, '$.LineupURL')) "
-			"as json from device where device.type = 'tuner' and cast(json as text) <> 'null'");
+		execute_non_query(instance, "drop table if exists discover_lineup_temp");
+		execute_non_query(instance, "create temp table discover_lineup_temp as select deviceid, http_request(json_extract(device.data, '$.LineupURL') || '?show=demo') as json from device where device.type = 'tuner'");
+		execute_non_query(instance, "insert into discover_lineup select deviceid, json from discover_lineup_temp where cast(json as text) <> 'null'");
+		execute_non_query(instance, "drop table discover_lineup_temp");
 
 		// This requires a multi-step operation against the lineup table; start a transaction
 		execute_non_query(instance, "begin immediate transaction");
@@ -962,7 +1061,7 @@ void discover_recordingrules(sqlite3* instance, bool& changed)
 	try {
 
 		// Discover the information for the available recording rules
-		execute_non_query(instance, "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+		execute_non_query(instance, "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 			"insert into discover_recordingrule select "
 			"json_extract(value, '$.RecordingRuleID') as recordingruleid, "
 			"json_extract(value, '$.SeriesID') as seriesid, "
@@ -1252,6 +1351,53 @@ void enumerate_channeltuners(sqlite3* instance, union channelid channelid, enume
 }
 
 //---------------------------------------------------------------------------
+// enumerate_demo_channelids
+//
+// Enumerates the channels marked as 'Demo' in the lineups
+//
+// Arguments:
+//
+//	instance	- Database instance
+//	showdrm		- Flag to show DRM channels
+//	callback	- Callback function
+
+void enumerate_demo_channelids(sqlite3* instance, bool showdrm, enumerate_channelids_callback callback)
+{
+	sqlite3_stmt*				statement;			// SQL statement to execute
+	int							result;				// Result from SQLite function
+	
+	if((instance == nullptr) || (callback == nullptr)) return;
+
+	// channelid
+	auto sql = "select distinct(encode_channel_id(json_extract(entry.value, '$.GuideNumber'))) as channelid "
+		"from lineup, json_each(lineup.data) as entry where json_extract(entry.value, '$.Demo') = 1 "
+		"and nullif(json_extract(entry.value, '$.DRM'), ?1) is null";
+
+	result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
+	if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+	try {
+
+		// Bind the query parameters
+		result = sqlite3_bind_int(statement, 1, (showdrm) ? 1 : 0);
+		if(result != SQLITE_OK) throw sqlite_exception(result);
+
+		// Execute the query and iterate over all returned rows
+		while(sqlite3_step(statement) == SQLITE_ROW) {
+
+			union channelid channelid;
+			channelid.value = static_cast<unsigned int>(sqlite3_column_int(statement, 0));
+			
+			callback(channelid);
+		}
+	
+		sqlite3_finalize(statement);			// Finalize the SQLite statement
+	}
+
+	catch(...) { sqlite3_finalize(statement); throw; }
+}
+
+//---------------------------------------------------------------------------
 // enumerate_device_names
 //
 // Enumerates the available device names
@@ -1445,7 +1591,7 @@ void enumerate_guideentries(sqlite3* instance, union channelid channelid, time_t
 	starttime = std::max(starttime, now - 14400);
 
 	// seriesid | title | starttime | endtime | synopsis | year | iconurl | genretype | genres | originalairdate | seriesnumber | episodenumber | episodename
-	auto sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+	auto sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 		"select json_extract(entry.value, '$.SeriesID') as seriesid, "
 		"json_extract(entry.value, '$.Title') as title, "
 		"json_extract(entry.value, '$.StartTime') as starttime, "
@@ -1789,7 +1935,7 @@ void enumerate_series(sqlite3* instance, char const* title, enumerate_series_cal
 	if((instance == nullptr) || (callback == nullptr)) return;
 
 	// title | seriesid
-	auto sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+	auto sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 		"select "
 		"json_extract(value, '$.Title') as title, "
 		"json_extract(value, '$.SeriesID') as seriesid "
@@ -1939,7 +2085,7 @@ std::string find_seriesid(sqlite3* instance, union channelid channelid, time_t t
 
 	// No guide data is stored locally anymore; always use the backend service to search for the seriesid.
 	// Use the electronic program guide API to locate a seriesid based on a channel and timestamp
-	auto sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+	auto sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 		"select json_extract(json_extract(nullif(http_request('http://api.hdhomerun.com/api/guide?DeviceAuth=' || coalesce(deviceauth.code, '') || '&Channel=' || decode_channel_id(?1) || '&Start=' || ?2), 'null'), '$[0].Guide[0]'), '$.SeriesID') "
 		"from deviceauth";
 
@@ -1987,7 +2133,7 @@ std::string find_seriesid(sqlite3* instance, char const* title)
 
 	// No guide data is stored locally anymore; always use the backend service to search for the seriesid.
 	// Use the search API to locate a series id based on the series title
-	auto sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+	auto sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 		"select "
 		"json_extract(value, '$.SeriesID') as seriesid "
 		"from deviceauth, json_each(http_request('http://api.hdhomerun.com/api/search?DeviceAuth=' || coalesce(deviceauth.code, '') || '&Search=' || url_encode(?1))) "
@@ -2576,6 +2722,53 @@ int get_timer_count(sqlite3* instance, int maxdays)
 }
 
 //---------------------------------------------------------------------------
+// get_tuner_direct_channel_flag
+//
+// Gets a flag indicating if a channel can only be streamed directly from a tuner device
+//
+// Arguments:
+//
+//	instance		- Database instance
+//	channelid		- Channel to be checked for tuner-direct only access
+
+bool get_tuner_direct_channel_flag(sqlite3* instance, union channelid channelid)
+{
+	sqlite3_stmt*			statement;				// SQL statement to execute
+	bool					directonly = false;		// Tuner-direct channel flag
+	int						result;					// Result from SQLite function
+	
+	if(instance == nullptr) return 0;
+
+	// Select a boolean flag indicating if any instances of this channel in the lineup table
+	// are flagged as tuner-direct only channels
+	auto sql = "select coalesce((select json_extract(lineupdata.value, '$.Demo') as tuneronly "
+		"from lineup, json_each(lineup.data) as lineupdata "
+		"where json_extract(lineupdata.value, '$.GuideNumber') = decode_channel_id(?1) and tuneronly is not null limit 1), 0)";
+
+	result = sqlite3_prepare_v2(instance, sql, -1, &statement, nullptr);
+	if(result != SQLITE_OK) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+	try {
+
+		// Bind the query parameters
+		result = sqlite3_bind_int(statement, 1, channelid.value);
+		if(result != SQLITE_OK) throw sqlite_exception(result);
+		
+		// Execute the scalar query
+		result = sqlite3_step(statement);
+
+		// There should be a single SQLITE_ROW returned from the initial step
+		if(result == SQLITE_ROW) directonly = (sqlite3_column_int(statement, 0) != 0);
+		else if(result != SQLITE_DONE) throw sqlite_exception(result, sqlite3_errmsg(instance));
+
+		sqlite3_finalize(statement);
+		return directonly;
+	}
+
+	catch(...) { sqlite3_finalize(statement); throw; }
+}
+
+//---------------------------------------------------------------------------
 // get_tuner_stream_url
 //
 // Generates a stream URL for the specified channel on the specified tuner
@@ -2651,6 +2844,11 @@ void http_request(sqlite3_context* context, int argc, sqlite3_value** argv)
 	long				responsecode = 200;		// HTTP response code
 	sqlite_buffer		blob;					// Dynamically allocated blob buffer
 
+	// useragent
+	//
+	// Static string to use as the User-Agent for this HTTP request
+	static std::string useragent = "Kodi-PVR/" + std::string(ADDON_INSTANCE_VERSION_PVR) + " " + VERSION_PRODUCTNAME_ANSI + "/" + VERSION_VERSION3_ANSI;
+
 	if((argc < 1) || (argc > 2) || (argv[0] == nullptr)) return sqlite3_result_error(context, "invalid argument", -1);
 
 	// A null or zero-length URL results in a NULL result
@@ -2670,13 +2868,14 @@ void http_request(sqlite3_context* context, int argc, sqlite3_value** argv)
 
 	// Set the CURL options and execute the web request to get the JSON string data
 	CURLcode curlresult = curl_easy_setopt(curl, CURLOPT_URL, url);
+	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_USERAGENT, useragent.c_str());
 	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
-	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
 	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, static_cast<CURL_WRITEFUNCTION>(write_function));
 	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_WRITEDATA, reinterpret_cast<void*>(&blob));
+	if(curlresult == CURLE_OK) curlresult = curl_easy_setopt(curl, CURLOPT_SHARE, static_cast<CURLSH*>(g_curlshare));
 	if(curlresult == CURLE_OK) curlresult = curl_easy_perform(curl);
 	if(curlresult == CURLE_OK) curlresult = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &responsecode);
 	curl_easy_cleanup(curl);
@@ -2742,7 +2941,7 @@ void modify_recordingrule(sqlite3* instance, struct recordingrule const& recordi
 			"json_extract(value, '$.SeriesID') as seriesid, "
 			"value as data "
 			"from "
-			"json_each((with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+			"json_each((with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 			"select http_request('http://api.hdhomerun.com/api/recording_rules?DeviceAuth=' || coalesce(deviceauth.code, '') || '&Cmd=change&RecordingRuleID=' || ?1 || "
 			"'&RecentOnly=' || case when ?2 is null then '' else ?2 end || "
 			"'&ChannelOnly=' || case when ?3 is null then '' else decode_channel_id(?3) end || "
@@ -2778,7 +2977,7 @@ void modify_recordingrule(sqlite3* instance, struct recordingrule const& recordi
 
 		// Update the episode data to take the modified recording rule(s) into account; watch out for the web
 		// services returning 'null' on the episode query -- this happens when there are no episodes
-		sql = "with deviceauth(code) as (select group_concat(json_extract(data, '$.DeviceAuth'), '') from device) "
+		sql = "with deviceauth(code) as (select url_encode(group_concat(json_extract(data, '$.DeviceAuth'), '')) from device) "
 			"replace into episode "
 			"select recordingrule.seriesid, "
 			"http_request('http://api.hdhomerun.com/api/episodes?DeviceAuth=' || coalesce(deviceauth.code, '') || '&SeriesID=' || recordingrule.seriesid) as data "
@@ -2890,52 +3089,52 @@ sqlite3* open_database(char const* connstring, int flags, bool initialize)
 
 		// scalar function: clean_filename
 		//
-		result = sqlite3_create_function_v2(instance, "clean_filename", 1, SQLITE_UTF8, nullptr, clean_filename, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "clean_filename", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, clean_filename, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: decode_channel_id
 		//
-		result = sqlite3_create_function_v2(instance, "decode_channel_id", 1, SQLITE_UTF8, nullptr, decode_channel_id, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "decode_channel_id", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, decode_channel_id, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: encode_channel_id
 		//
-		result = sqlite3_create_function_v2(instance, "encode_channel_id", 1, SQLITE_UTF8, nullptr, encode_channel_id, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "encode_channel_id", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, encode_channel_id, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: fnv_hash
 		//
-		result = sqlite3_create_function_v2(instance, "fnv_hash", -1, SQLITE_UTF8, nullptr, fnv_hash, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "fnv_hash", -1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, fnv_hash, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
-		// scalar function: generate_uuid
+		// scalar function: generate_uuid (non-deterministic)
 		//
 		result = sqlite3_create_function_v2(instance, "generate_uuid", 0, SQLITE_UTF8, nullptr, generate_uuid, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: get_channel_number
 		//
-		result = sqlite3_create_function_v2(instance, "get_channel_number", 1, SQLITE_UTF8, nullptr, get_channel_number, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "get_channel_number", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, get_channel_number, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: get_episode_number
 		//
-		result = sqlite3_create_function_v2(instance, "get_episode_number", 1, SQLITE_UTF8, nullptr, get_episode_number, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "get_episode_number", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, get_episode_number, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: get_season_number
 		//
-		result = sqlite3_create_function_v2(instance, "get_season_number", 1, SQLITE_UTF8, nullptr, get_season_number, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "get_season_number", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, get_season_number, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
-		// scalar function: http_request
+		// scalar function: http_request (non-deterministic)
 		//
 		result = sqlite3_create_function_v2(instance, "http_request", -1, SQLITE_UTF8, nullptr, http_request, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// scalar function: url_encode
 		//
-		result = sqlite3_create_function_v2(instance, "url_encode", 1, SQLITE_UTF8, nullptr, url_encode, nullptr, nullptr, nullptr);
+		result = sqlite3_create_function_v2(instance, "url_encode", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, nullptr, url_encode, nullptr, nullptr, nullptr);
 		if(result != SQLITE_OK) throw sqlite_exception(result);
 
 		// Only execute schema creation steps if the database is being initialized; the caller needs

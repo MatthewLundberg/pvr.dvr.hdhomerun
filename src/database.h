@@ -1,5 +1,5 @@
 //---------------------------------------------------------------------------
-// Copyright (c) 2017 Michael G. Brehm
+// Copyright (c) 2018 Michael G. Brehm
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -394,6 +394,11 @@ void enumerate_channelids(sqlite3* instance, bool showdrm, enumerate_channelids_
 // Enumerates the tuners that can tune a specific channel
 void enumerate_channeltuners(sqlite3* instance, union channelid channelid, enumerate_channeltuners_callback callback);
 
+// enumerate_demo_channelids
+//
+// Enumerates channels marked as 'Demo' in the lineups
+void enumerate_demo_channelids(sqlite3* instance, bool showdrm, enumerate_channelids_callback callback);
+
 // enumerate_device_names
 //
 // Enumerates the available device names
@@ -509,6 +514,11 @@ std::string get_stream_url(sqlite3* instance, union channelid channelid);
 //
 // Gets the number of timers in the database
 int get_timer_count(sqlite3* instance, int maxdays);
+
+// get_tuner_direct_channel_flag
+//
+// Gets a flag indicating if a channel can only be streamed directly from a tuner device
+bool get_tuner_direct_channel_flag(sqlite3* instance, union channelid channelid);
 
 // get_tuner_stream_url
 //

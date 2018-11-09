@@ -20,56 +20,64 @@
 // SOFTWARE.
 //-----------------------------------------------------------------------------
 
-#ifndef __SQLITE_EXCEPTION_H_
-#define __SQLITE_EXCEPTION_H_
+#ifndef __CURLSHARE_H_
+#define __CURLSHARE_H_
 #pragma once
 
-#include <exception>
-#include <string>
-#include <sqlite3.h>
+#include <mutex>
 
 #pragma warning(push, 4)	
 
 //-----------------------------------------------------------------------------
-// Class sqlite_exception
+// Class curlshare
 //
-// std::exception used to wrap SQLite error conditions
+// cURL share interface implementation; allows sharing of the DNS and connection
+// cache among disparate cURL easy interface objects.  Note the use of recursive
+// mutexes as the synchronization objects; cURL can and does call into the lock
+// function multiple times on the same thread.
 
-class sqlite_exception : public std::exception
+class curlshare
 {
 public:
 
-	// Instance Constructors
+	// Instance Constructor
 	//
-	sqlite_exception(int code);
-	sqlite_exception(int code, char const* message);
+	curlshare();
 
-	// Copy Constructor
+	// Destructor
 	//
-	sqlite_exception(sqlite_exception const& rhs);
+	~curlshare();
 
-	// char const* conversion operator
+	// CURLSH* conversion operator
 	//
-	operator char const*() const;
-
-	//-------------------------------------------------------------------------
-	// Member Functions
-
-	// what (std::exception)
-	//
-	// Gets a pointer to the exception message text
-	virtual char const* what(void) const noexcept override;
-		
+	operator CURLSH*() const;
+	
 private:
+
+	//-----------------------------------------------------------------------
+	// Private Member Functions
+
+	// curl_lock (static)
+	//
+	// Provides the lock callback for the shared interface
+	static void curl_lock(CURL* handle, curl_lock_data data, curl_lock_access access, void* context);
+
+	// curl_unlock (static)
+	//
+	// Provides the unlock callback for the shared interface
+	static void curl_unlock(CURL* handle, curl_lock_data data, void* context);
 
 	//-------------------------------------------------------------------------
 	// Member Variables
 
-	std::string					m_what;			// SQLite error message
+	CURLSH*							m_curlsh;		// cURL share interface handle
+	mutable std::recursive_mutex	m_sharelock;	// General share synchronization object
+	mutable std::recursive_mutex	m_dnslock;		// DNS share synchronization object
+	mutable std::recursive_mutex	m_connlock;		// Connection share synchronization object
 };
 
 //-----------------------------------------------------------------------------
 
 #pragma warning(pop)
 
-#endif	// __SQLITE_EXCEPTION_H_
+#endif	// __CURLSHARE_H_

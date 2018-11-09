@@ -20,43 +20,50 @@
 // SOFTWARE.
 //-----------------------------------------------------------------------------
 
-#include "stdafx.h"
-#include "strings.h"
+#ifndef __HTTP_EXCEPTION_H_
+#define __HTTP_EXCEPTION_H_
+#pragma once
 
-#include <string.h>
+#include <HttpStatusCodes_C++11.h>
 
-#pragma warning(push, 4)
+#include "string_exception.h"
 
-//---------------------------------------------------------------------------
-// strcasecmp
+#pragma warning(push, 4)	
+
+//-----------------------------------------------------------------------------
+// Class http_exception
 //
-// Compares the two strings s1 and s2, ignoring the case of the characters
-//
-// Arguments:
-//
-//	s1		- Left-hand string to be compared
-//	s2		- Right-hand string to be compared
+// Specialization of string_exception for HTTP response codes
 
-int strcasecmp(char const* s1, char const* s2)
+class http_exception : public string_exception
 {
-	return _stricmp(s1, s2);
-}
+public:
 
-//---------------------------------------------------------------------------
-// strncasecmp
-//
-// Compares the two strings s1 and s2, ignoring the case of the characters
-//
-// Arguments:
-//
-//	s1		- Left-hand string to be compared
-//	s2		- Right-hand string to be compared
+	// Instance Constructor
+	//
+	http_exception(long responsecode) : string_exception("HTTP ", responsecode, ": ", HttpStatus::reasonPhrase(responsecode)), m_responsecode(responsecode) {}
 
-int strncasecmp(char const* s1, char const* s2, size_t n)
-{
-	return _strnicmp(s1, s2, n);
-}
+	//-------------------------------------------------------------------------
+	// Member Functions
+
+	// responsecode
+	//
+	// Gets the HTTP response code associated with the exception
+	long responsecode(void) const noexcept
+	{
+		return m_responsecode;
+	}
+		
+private:
+
+	//-------------------------------------------------------------------------
+	// Member Variables
+
+	long 				m_responsecode;			// HTTP response code
+};
 
 //-----------------------------------------------------------------------------
 
 #pragma warning(pop)
+
+#endif	// __HTTP_EXCEPTION_H_
